@@ -278,10 +278,28 @@ if perfil_atual in ["Gerente / Admin", "Gestor de Acompanhamento"]:
                     
                     forma_pag = "Dinheiro"
                     if tipo_mov == "Venda":
-                        forma_pag = st.selectbox("Forma de Pagamento", ["Dinheiro", "Pix", "Cartão de Crédito", "Cartão de Débito", "Delivery / Online"])
+                        forma_pag = st.selectbox("Forma de Pagamento", ["Dinheiro", "Pix", "Cartão de Crédito", "Cartão de Débito"])
                     
-                    valor = st.number_input("Valor (R$)", min_value=0.01, value=10.0, step=1.0)
-                    descricao = st.text_input("Descrição / Observação (Ex: Venda Mesa 04, Pagamento Fornecedor)").strip()
+                    valor = st.number_input("Valor da Venda / Operação (R$)", min_value=0.01, value=10.0, step=1.0)
+                    
+                    # Informação da Chave Pix se Pix for selecionado
+                    if tipo_mov == "Venda" and forma_pag == "Pix":
+                        st.info("📲 **Chave Pix para Pagamento:** `929813904244`")
+
+                    # Tela auxiliar de calculo de troco caso seja dinheiro
+                    dinheiro_recebido = 0.0
+                    if tipo_mov == "Venda" and forma_pag == "Dinheiro":
+                        st.markdown("---")
+                        st.write("💵 **Facilitador de Troco (Dinheiro)**")
+                        dinheiro_recebido = st.number_input("Valor entregue pelo cliente (R$)", min_value=0.0, value=float(valor), step=1.0)
+                        troco_devido = dinheiro_recebido - valor
+                        if troco_devido >= 0:
+                            st.success(f"🧮 **Troco a devolver ao cliente: R$ {troco_devido:.2f}**")
+                        else:
+                            st.error(f"⚠️ O valor entregue é menor que o total da venda (Falta R$ {abs(troco_devido):.2f})")
+                        st.markdown("---")
+
+                    descricao = st.text_input("Descrição / Observação (Ex: Venda Mesa 04)").strip()
 
                     if st.form_submit_button("💾 Registar Movimento no Caixa", type="primary"):
                         conn = get_connection()
@@ -447,9 +465,27 @@ else:
                 
                 forma_pag = "Dinheiro"
                 if tipo_mov == "Venda":
-                    forma_pag = st.selectbox("Forma de Pagamento", ["Dinheiro", "Pix", "Cartão de Crédito", "Cartão de Débito", "Delivery / Online"])
+                    forma_pag = st.selectbox("Forma de Pagamento", ["Dinheiro", "Pix", "Cartão de Crédito", "Cartão de Débito"])
                 
-                valor = st.number_input("Valor (R$)", min_value=0.01, value=20.0, step=1.0)
+                valor = st.number_input("Valor da Venda / Operação (R$)", min_value=0.01, value=20.0, step=1.0)
+                
+                # Exibir chave Pix se selecionado
+                if tipo_mov == "Venda" and forma_pag == "Pix":
+                    st.info("📲 **Chave Pix para Pagamento:** `929813904244`")
+
+                # Calculadora de troco na visão do operador
+                dinheiro_recebido = 0.0
+                if tipo_mov == "Venda" and forma_pag == "Dinheiro":
+                    st.markdown("---")
+                    st.write("💵 **Facilitador de Troco (Dinheiro)**")
+                    dinheiro_recebido = st.number_input("Valor entregue pelo cliente (R$)", min_value=0.0, value=float(valor), step=1.0)
+                    troco_devido = dinheiro_recebido - valor
+                    if troco_devido >= 0:
+                        st.success(f"🧮 **Troco a devolver ao cliente: R$ {troco_devido:.2f}**")
+                    else:
+                        st.error(f"⚠️ O valor entregue é menor que o total da venda (Falta R$ {abs(troco_devido):.2f})")
+                    st.markdown("---")
+
                 descricao = st.text_input("Descrição / Identificação").strip()
 
                 if st.form_submit_button("Confirmar Lançamento", type="primary"):
