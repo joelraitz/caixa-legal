@@ -44,11 +44,57 @@ def init_db():
     c.execute("SELECT * FROM usuarios WHERE username = 'gerente'")
     if not c.fetchone():
         c.execute("INSERT OR REPLACE INTO usuarios VALUES ('gerente', ?, 'Gerente / Admin', 'Ativo')", (hash_senha("admin123"),))
+    c.execute("SELECT * FROM usuarios WHERE username = 'gestor'")
+    if not c.fetchone():
+        c.execute("INSERT OR REPLACE INTO usuarios VALUES ('gestor', ?, 'Gestor de Acompanhamento', 'Ativo')", (hash_senha("gestor123"),))
 
     conn.commit()
     conn.close()
 
 init_db()
+
+def gerar_pdf_relatorio_caixa(df_dados, titulo_relatorio):
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=20, leftMargin=20, topMargin=20, bottomMargin=20)
+    story = []
+    styles = getSampleStyleSheet()
+
+    title_style = ParagraphStyle('TitleStyle', parent=styles['Heading1'], fontSize=15, textColor=colors.HexColor('#0f172a'))
+    story.append(Paragraph("Relatório Financeiro - " + str(titulo_relatorio), title_style))
+    story.append(Paragraph("Emitido em: " + datetime.datetime.now().strftime('%d/%m/%Y %H:%M'), styles['Normal']))
+    story.append(Spacer(1, 10))
+
+    cell_style = ParagraphStyle('CellStyle', parent=styles['Normal'], fontSize=8, leading=10)
+    header_style = ParagraphStyle('HeaderStyle', parent=styles['Normal'], fontSize=8, leading=10, textColor=colors.whitesmoke, fontName='Helvetica-Bold')
+
+    colunas = df_dados.columns.tolist()
+    headers = [Paragraph(str(c), header_style) for c in colunas]
+    data_matrix = [headers]
+
+    for _, r in df_dados.iterrows():
+        row_cells = []
+        for col in colunas:
+            val = str(r[col]) if pd.notna(r[col]) else ""
+            row_cells.append(Paragraph(val, cell_style))
+        data_matrix.append(row_cells)
+
+    num_cols = len(colunas)
+    largura_util = 555
+    col_widths = [largura_util / num_cols] * num_cols
+
+    tabela = Table(data_matrix, colWidths=col_widths)
+    tabela.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#0f172a')),
+        ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#cbd5e1')),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 5),
+        ('TOPPADDING', (0, 0), (-1, -1), 5),
+    ]))
+    story.append(tabela)
+    doc.build(story)
+    buffer.seek(0)
+    return buffer.getvalue()
 
 if "logado" not in st.session_state:
     st.session_state["logado"] = False
@@ -125,18 +171,26 @@ turno_ativo = get_turno_aberto(usuario_atual)
 
 if perfil_atual == "Gerente / Admin":
     abas = st.tabs([
-        "📊 Dashboard Interativo de Vendas", 
+        "📊 Dashboard Interativo", 
         "🔓 Abrir / Gerir Turnos", 
         "💸 Movimentos (Vendas/Sangrias)", 
         "👥 Gestão de Utilizadores", 
-        "📈 Relatórios e Fechos"
+        "📈 Relatórios em PDF"
     ])
     aba_dash, aba_turnos, aba_mov, aba_usr, aba_rel = abas
+elif perfil_atual == "Gestor de Acompanhamento":
+    abas = st.tabs([
+        "📊 Dashboard Interativo", 
+        "🔓 Acompanhar Turnos", 
+        "💸 Acompanhar Movimentos", 
+        "📈 Relatórios em PDF"
+    ])
+    aba_dash, aba_turnos, aba_mov, aba_rel = abas
 else:
     abas = st.tabs(["🔓 Abertura de Caixa", "💸 Lançamentos (Vendas / Sangria / Reforço)", "🔒 Fecho de Caixa & Relatório"])
     aba_abertura_op, aba_mov_op, aba_fecho_op = abas
 
-if perfil_atual == "Gerente / Admin":
+if perfil_atual in ["Gerente / Admin", "Gestor de Acompanhamento"]:
     with aba_dash:
         st.subheader("📊 Dashboard Interativo — Progresso e Desempenho de Vendas do Dia")
         
@@ -152,7 +206,6 @@ if perfil_atual == "Gerente / Admin":
         else:
             df_hoje = pd.DataFrame()
 
-        # Métricas Principais do Dia
         faturamento_hoje = df_hoje[df_hoje['tipo'] == 'Venda']['valor'].sum() if not df_hoje.empty else 0.0
         total_vendas_qtd = len(df_hoje[df_hoje['tipo'] == 'Venda']) if not df_hoje.empty else 0
         ticket_medio = faturamento_hoje / total_vendas_qtd if total_vendas_qtd > 0 else 0.0
@@ -162,7 +215,7 @@ if perfil_atual == "Gerente / Admin":
         col_m2.metric("🧾 Nº de Vendas Hoje", total_vendas_qtd)
         col_m3.metric("📈 Ticket Médio", f"R$ {ticket_medio:.2f}")
         
-        meta_dia = 1000.00  # Meta configurável de exemplo
+        meta_dia = 1000.00
         progresso_meta = min(faturamento_hoje / meta_dia, 1.0) if meta_dia > 0 else 0
         col_m4.metric("🎯 Progresso da Meta (R$ 1.000)", f"{progresso_meta * 100:.1f}%")
         st.progress(progresso_meta)
@@ -205,117 +258,145 @@ if perfil_atual == "Gerente / Admin":
                 st.info("Sem dados temporais suficientes para o gráfico por hora.")
 
     with aba_turnos:
-        st.subheader("🔓 Gestão e Acompanhamento de Turnos de Caixa")
+        st.subheader("🔓 Acompanhamento e Gestão de Turnos de Caixa")
         conn = get_connection()
         df_t = pd.read_sql_query("SELECT * FROM turnos_caixa ORDER BY id DESC", conn)
         conn.close()
         st.dataframe(df_t, use_container_width=True)
 
     with aba_mov:
-        st.subheader("💸 Registo de Movimentos Financeiros (Estilo PDV Saipos)")
-        if turno_ativo is None:
-            st.warning("⚠️ Não tem nenhum turno aberto no momento. Abra um caixa para poder movimentar.")
+        if perfil_atual == "Gerente / Admin":
+            st.subheader("💸 Registo de Movimentos Financeiros (Estilo PDV Saipos)")
+            if turno_ativo is None:
+                st.warning("⚠️ Não tem nenhum turno aberto no momento. Abra um caixa para poder movimentar.")
+            else:
+                turno_id = turno_ativo[0]
+                st.info(f"Turno Ativo ID: {turno_id:03d} | Aberto em: {turno_ativo[2]} | Fundo Inicial: R$ {turno_ativo[1]:.2f}")
+
+                with st.form("form_mov_saipos", clear_on_submit=True):
+                    tipo_mov = st.selectbox("Tipo de Movimento", ["Venda", "Sangria (Retirada de Dinheiro)", "Reforço (Entrada de Troco/Dinheiro)", "Despesa / Pagamento à Vista"])
+                    
+                    forma_pag = "Dinheiro"
+                    if tipo_mov == "Venda":
+                        forma_pag = st.selectbox("Forma de Pagamento", ["Dinheiro", "Pix", "Cartão de Crédito", "Cartão de Débito", "Delivery / Online"])
+                    
+                    valor = st.number_input("Valor (R$)", min_value=0.01, value=10.0, step=1.0)
+                    descricao = st.text_input("Descrição / Observação (Ex: Venda Mesa 04, Pagamento Fornecedor)").strip()
+
+                    if st.form_submit_button("💾 Registar Movimento no Caixa", type="primary"):
+                        conn = get_connection()
+                        c = conn.cursor()
+                        c.execute(
+                            "INSERT INTO movimentacoes_caixa (turno_id, tipo, forma_pagamento, valor, descricao, data_hora, operador) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                            (turno_id, tipo_mov, forma_pag, valor, descricao, datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"), usuario_atual)
+                        )
+                        conn.commit()
+                        conn.close()
+                        st.success("✅ Movimento registado com sucesso!")
+                        st.rerun()
         else:
-            turno_id = turno_ativo[0]
-            st.info(f"Turno Ativo ID: {turno_id:03d} | Aberto em: {turno_ativo[2]} | Fundo Inicial: R$ {turno_ativo[1]:.2f}")
-
-            with st.form("form_mov_saipos", clear_on_submit=True):
-                tipo_mov = st.selectbox("Tipo de Movimento", ["Venda", "Sangria (Retirada de Dinheiro)", "Reforço (Entrada de Troco/Dinheiro)", "Despesa / Pagamento à Vista"])
-                
-                forma_pag = "Dinheiro"
-                if tipo_mov == "Venda":
-                    forma_pag = st.selectbox("Forma de Pagamento", ["Dinheiro", "Pix", "Cartão de Crédito", "Cartão de Débito", "Delivery / Online"])
-                
-                valor = st.number_input("Valor (R$)", min_value=0.01, value=10.0, step=1.0)
-                descricao = st.text_input("Descrição / Observação (Ex: Venda Mesa 04, Pagamento Fornecedor)").strip()
-
-                if st.form_submit_button("💾 Registar Movimento no Caixa", type="primary"):
-                    conn = get_connection()
-                    c = conn.cursor()
-                    c.execute(
-                        "INSERT INTO movimentacoes_caixa (turno_id, tipo, forma_pagamento, valor, descricao, data_hora, operador) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                        (turno_id, tipo_mov, forma_pag, valor, descricao, datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"), usuario_atual)
-                    )
-                    conn.commit()
-                    conn.close()
-                    st.success("✅ Movimento registado com sucesso!")
-                    st.rerun()
-
-    with aba_usr:
-        st.subheader("👥 Gestão Completa de Utilizadores (Criar, Alterar Senha, Bloquear/Liberar)")
-        
-        tab_u1, tab_u2 = st.tabs(["➕ Criar Novo Utilizador", "⚙️ Gerir, Senhas e Estado (Bloquear/Liberar)"])
-        
-        with tab_u1:
-            with st.form("form_novo_usuario", clear_on_submit=True):
-                novo_user = st.text_input("Nome de Utilizador (Login)").strip()
-                nova_senha = st.text_input("Senha Inicial", type="password")
-                novo_perfil = st.selectbox("Perfil de Acesso", ["Operador de Caixa", "Gerente / Admin"])
-                
-                if st.form_submit_button("💾 Cadastrar Utilizador", type="primary"):
-                    if novo_user and nova_senha:
-                        try:
-                            conn = get_connection()
-                            c = conn.cursor()
-                            c.execute(
-                                "INSERT INTO usuarios (username, senha, perfil, status) VALUES (?, ?, ?, 'Ativo')",
-                                (novo_user, hash_senha(nova_senha), novo_perfil)
-                            )
-                            conn.commit()
-                            conn.close()
-                            st.success(f"✅ Utilizador '{novo_user}' criado com sucesso!")
-                            st.rerun()
-                        except sqlite3.IntegrityError:
-                            st.error("Erro: Este nome de utilizador já existe no sistema.")
-                    else:
-                        st.warning("Por favor, preencha o utilizador e a senha.")
-
-        with tab_u2:
+            st.subheader("💸 Acompanhamento de Todas as Movimentações do Caixa")
             conn = get_connection()
-            df_usuarios = pd.read_sql_query("SELECT username, perfil, status FROM usuarios", conn)
+            df_all_mov = pd.read_sql_query("SELECT m.id, m.turno_id as 'Turno', m.operador as 'Operador', m.tipo as 'Tipo', m.forma_pagamento as 'Forma Pag.', m.valor as 'Valor (R$)', m.descricao as 'Descrição', m.data_hora as 'Data/Hora' FROM movimentacoes_caixa m ORDER BY m.id DESC", conn)
             conn.close()
+            st.dataframe(df_all_mov, use_container_width=True)
 
-            if not df_usuarios.empty:
-                st.dataframe(df_usuarios, use_container_width=True)
-                
-                st.divider()
-                st.subheader("🛠️ Modificar Utilizador Selecionado")
-                
-                user_selecionado = st.selectbox("Escolha o Utilizador", df_usuarios['username'].tolist())
-                
-                # Obter status atual
+    if perfil_atual == "Gerente / Admin":
+        with aba_usr:
+            st.subheader("👥 Gestão Completa de Utilizadores (Criar, Alterar Senha, Bloquear/Liberar)")
+            tab_u1, tab_u2 = st.tabs(["➕ Criar Novo Utilizador", "⚙️ Gerir, Senhas e Estado"])
+            
+            with tab_u1:
+                with st.form("form_novo_usuario", clear_on_submit=True):
+                    novo_user = st.text_input("Nome de Utilizador (Login)").strip()
+                    nova_senha = st.text_input("Senha Inicial", type="password")
+                    novo_perfil = st.selectbox("Perfil de Acesso", ["Operador de Caixa", "Gestor de Acompanhamento", "Gerente / Admin"])
+                    
+                    if st.form_submit_button("💾 Cadastrar Utilizador", type="primary"):
+                        if novo_user and nova_senha:
+                            try:
+                                conn = get_connection()
+                                c = conn.cursor()
+                                c.execute(
+                                    "INSERT INTO usuarios (username, senha, perfil, status) VALUES (?, ?, ?, 'Ativo')",
+                                    (novo_user, hash_senha(nova_senha), novo_perfil)
+                                )
+                                conn.commit()
+                                conn.close()
+                                st.success(f"✅ Utilizador '{novo_user}' criado com sucesso!")
+                                st.rerun()
+                            except sqlite3.IntegrityError:
+                                st.error("Erro: Este nome de utilizador já existe no sistema.")
+                        else:
+                            st.warning("Por favor, preencha o utilizador e a senha.")
+
+            with tab_u2:
                 conn = get_connection()
-                c = conn.cursor()
-                c.execute("SELECT status, perfil FROM usuarios WHERE username = ?", (user_selecionado,))
-                st_atual, perf_atual_usr = c.fetchone()
+                df_usuarios = pd.read_sql_query("SELECT username, perfil, status FROM usuarios", conn)
                 conn.close()
 
-                col_e1, col_e2 = st.columns(2)
-                with col_e1:
-                    nova_senha_edit = st.text_input("Nova Senha (deixar em branco para não alterar)", type="password")
-                with col_e2:
-                    novo_status_edit = st.selectbox("Estado da Conta", ["Ativo", "Bloqueado"], index=0 if st_atual == "Ativo" else 1)
-
-                if st.button("💾 Atualizar Dados do Utilizador", type="primary"):
+                if not df_usuarios.empty:
+                    st.dataframe(df_usuarios, use_container_width=True)
+                    st.divider()
+                    st.subheader("🛠️ Modificar Utilizador Selecionado")
+                    
+                    user_selecionado = st.selectbox("Escolha o Utilizador", df_usuarios['username'].tolist())
+                    
                     conn = get_connection()
                     c = conn.cursor()
-                    if nova_senha_edit.strip():
-                        c.execute("UPDATE usuarios SET senha = ?, status = ? WHERE username = ?", (hash_senha(nova_senha_edit), novo_status_edit, user_selecionado))
-                    else:
-                        c.execute("UPDATE usuarios SET status = ? WHERE username = ?", (novo_status_edit, user_selecionado))
-                    conn.commit()
+                    c.execute("SELECT status, perfil FROM usuarios WHERE username = ?", (user_selecionado,))
+                    st_atual, perf_atual_usr = c.fetchone()
                     conn.close()
-                    st.success(f"✅ Utilizador '{user_selecionado}' atualizado com sucesso!")
-                    st.rerun()
-            else:
-                st.info("Nenhum utilizador registado.")
+
+                    col_e1, col_e2 = st.columns(2)
+                    with col_e1:
+                        nova_senha_edit = st.text_input("Nova Senha (deixar em branco para não alterar)", type="password")
+                    with col_e2:
+                        novo_status_edit = st.selectbox("Estado da Conta", ["Ativo", "Bloqueado"], index=0 if st_atual == "Ativo" else 1)
+
+                    if st.button("💾 Atualizar Dados do Utilizador", type="primary"):
+                        conn = get_connection()
+                        c = conn.cursor()
+                        if nova_senha_edit.strip():
+                            c.execute("UPDATE usuarios SET senha = ?, status = ? WHERE username = ?", (hash_senha(nova_senha_edit), novo_status_edit, user_selecionado))
+                        else:
+                            c.execute("UPDATE usuarios SET status = ? WHERE username = ?", (novo_status_edit, user_selecionado))
+                        conn.commit()
+                        conn.close()
+                        st.success(f"✅ Utilizador '{user_selecionado}' atualizado com sucesso!")
+                        st.rerun()
 
     with aba_rel:
-        st.subheader("📈 Relatórios de Fecho e Auditoria de Caixa")
+        st.subheader("📈 Relatórios de Fecho e Auditoria de Caixa (Exportação em PDF)")
+        
+        tipo_rel_pdf = st.selectbox("Selecione o Modelo de Relatório para PDF", [
+            "Extrato Geral de Movimentações", 
+            "Relatório de Turnos e Fechos de Caixa"
+        ])
+
         conn = get_connection()
-        df_r = pd.read_sql_query("SELECT m.id, m.turno_id as 'Turno', m.operador as 'Operador', m.tipo as 'Tipo', m.forma_pagamento as 'Forma Pag.', m.valor as 'Valor (R$)', m.descricao as 'Descrição', m.data_hora as 'Data/Hora' FROM movimentacoes_caixa m ORDER BY m.id DESC", conn)
+        if tipo_rel_pdf == "Extrato Geral de Movimentações":
+            df_rel_pdf = pd.read_sql_query("SELECT m.turno_id as 'Turno', m.operador as 'Operador', m.tipo as 'Tipo', m.forma_pagamento as 'Forma Pag.', m.valor as 'Valor (R$)', m.data_hora as 'Data/Hora' FROM movimentacoes_caixa m ORDER BY m.id DESC", conn)
+            nome_arq_pdf = "relatorio_movimentacoes_caixa.pdf"
+        else:
+            df_rel_pdf = pd.read_sql_query("SELECT id as 'Turno', operador as 'Operador', data_abertura as 'Abertura', valor_inicial as 'Inicial (R\()', valor_fechamento as 'Final (R\))', diferenca as 'Dif. (R$)', status as 'Status' FROM turnos_caixa ORDER BY id DESC", conn)
+            nome_arq_pdf = "relatorio_turnos_caixa.pdf"
         conn.close()
-        st.dataframe(df_r, use_container_width=True)
+
+        if not df_rel_pdf.empty:
+            st.dataframe(df_rel_pdf, use_container_width=True)
+            
+            pdf_bytes = gerar_pdf_relatorio_caixa(df_rel_pdf, tipo_rel_pdf)
+            st.download_button(
+                label=f"📄 Descarregar Relatório ({tipo_rel_pdf}) em PDF",
+                data=pdf_bytes,
+                file_name=nome_arq_pdf,
+                mime="application/pdf",
+                type="primary",
+                use_container_width=True
+            )
+        else:
+            st.info("Nenhum dado registado para gerar o relatório.")
 
 else:
     # PERFIL OPERADOR DE CAIXA
