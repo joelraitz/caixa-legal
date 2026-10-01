@@ -62,7 +62,7 @@ def gerar_qrcode_pix(chave, valor):
     buf.seek(0)
     return buf
 
-def gerar_pdf_relatorio_caixa(df_dados, titulo_relatorio):
+def gerar_pdf_relatorio_caixa(df_dados, titulo_relatorio, total_geral, somas_formas):
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=20, leftMargin=20, topMargin=20, bottomMargin=20)
     story = []
@@ -71,6 +71,11 @@ def gerar_pdf_relatorio_caixa(df_dados, titulo_relatorio):
     title_style = ParagraphStyle('TitleStyle', parent=styles['Heading1'], fontSize=15, textColor=colors.HexColor('#0f172a'))
     story.append(Paragraph("Relatório Financeiro - " + str(titulo_relatorio), title_style))
     story.append(Paragraph("Emitido em: " + datetime.datetime.now().strftime('%d/%m/%Y %H:%M'), styles['Normal']))
+    story.append(Spacer(1, 10))
+
+    # Totais por forma de pagamento no PDF
+    resumo_texto = f"**Total Geral:** R$ {total_geral:.2f} | **Dinheiro:** R$ {somas_formas.get('Dinheiro', 0):.2f} | **Pix:** R$ {somas_formas.get('Pix', 0):.2f} | **Crédito:** R$ {somas_formas.get('Cartão de Crédito', 0):.2f} | **Débito:** R$ {somas_formas.get('Cartão de Débito', 0):.2f}"
+    story.append(Paragraph(resumo_texto, styles['Normal']))
     story.append(Spacer(1, 10))
 
     cell_style = ParagraphStyle('CellStyle', parent=styles['Normal'], fontSize=8, leading=10)
@@ -149,7 +154,6 @@ if not st.session_state["logado"]:
     tela_login()
     st.stop()
 
-# Barra Superior Simples Corrigida
 col_top1, col_top2, col_top3 = st.columns([3, 1, 1])
 col_top1.title("💰 Caixa Legal — Ecrã de Operação")
 col_top2.markdown(f"👤 **{st.session_state['usuario']}**\n_{st.session_state['perfil']}_")
@@ -180,31 +184,54 @@ turno_ativo = get_turno_aberto(usuario_atual)
 if perfil_atual in ["Gerente / Admin", "Gestor de Acompanhamento"]:
     st.subheader("📊 Painel de Controlo e Acompanhamento Geral")
     
-    col_kpi1, col_kpi2, col_kpi3 = st.columns(3)
     conn = get_connection()
     df_mov = pd.read_sql_query("SELECT * FROM movimentacoes_caixa", conn)
     conn.close()
 
-    faturamento_hoje = df_mov['valor'].sum() if not df_mov.empty else 0.0
-    col_kpi1.metric("Faturamento Registado", f"R$ {faturamento_hoje:.2f}")
-    col_kpi2.metric("Turnos Registados", len(pd.read_sql_query("SELECT * FROM turnos_caixa", get_connection())))
-    col_kpi3.metric("Utilizadores Ativos", len(pd.read_sql_query("SELECT * FROM usuarios", get_connection())))
-
-    st.markdown("### 📋 Informações Rápidas e Relatórios")
-    col_adm1, col_adm2 = st.columns(2)
+    # Calcular somas detalhadas por forma de pagamento (Apenas Vendas)
+    df_vendas = df_mov[df_mov['tipo'] == 'Venda'] if not df_mov.empty else pd.DataFrame()
+    total_geral = df_vendas['valor'].sum() if not df_vendas.empty else 0.0
     
+    soma_dinheiro = df_vendas[df_vendas['forma_pagamento'] == 'Dinheiro']['valor'].sum() if not df_vendas.empty else 0.0
+    soma_pix = df_vendas[df_vendas['forma_pagamento'] == 'Pix']['valor'].sum() if not df_vendas.empty else 0.0
+    soma_credito = df_vendas[df_vendas['forma_pagamento'] == 'Cartão de Crédito']['valor'].sum() if not df_vendas.empty else 0.0
+    soma_debito = df_vendas[df_vendas['forma_pagamento'] == 'Cartão de Débito']['valor'].sum() if not df_vendas.empty else 0.0
+
+    somas_dict = {
+        'Dinheiro': soma_dinheiro,
+        'Pix': soma_pix,
+        'Cartão de Crédito': soma_credito,
+        'Cartão de Débito': soma_debito
+    }
+
+    # Métricas Visuais de Totais
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("💰 Total Geral", f"R$ {total_geral:.2f}")
+    c2.metric("💵 Dinheiro", f"R$ {soma_dinheiro:.2f}")
+    c3.metric("📲 Pix", f"R$ {soma_pix:.2f}")
+    c4.metric("💳 Crédito", f"R$ {soma_credito:.2f}")
+    c5.metric("💳 Débito", f"R$ {soma_debito:.2f}")
+
+    st.divider()
+    st.markdown("### 📋 Extrato Geral e Relatório PDF com Totais")
+    
+    col_adm1, col_adm2 = st.columns(2)
     with col_adm1:
-        st.write("#### 📈 Extrato Geral")
+        st.write("#### 📈 Últimas Movimentações")
         conn = get_connection()
         df_all = pd.read_sql_query("SELECT * FROM movimentacoes_caixa ORDER BY id DESC LIMIT 10", conn)
         conn.close()
         st.dataframe(df_all, use_container_width=True)
 
     with col_adm2:
-        st.write("#### 📄 Descarregar Relatório PDF")
-        if not df_all.empty:
-            pdf_bytes = gerar_pdf_relatorio_caixa(df_all, "Extrato Geral")
-            st.download_button("📥 Descarregar PDF", data=pdf_bytes, file_name="relatorio_caixa.pdf", mime="application/pdf", use_container_width=True)
+        st.write("#### 📄 Exportar Relatório com Totais em PDF")
+        conn = get_connection()
+        df_pdf_data = pd.read_sql_query("SELECT m.turno_id as 'Turno', m.operador as 'Operador', m.tipo as 'Tipo', m.forma_pagamento as 'Forma Pag.', m.valor as 'Valor (R$)', m.data_hora as 'Data/Hora' FROM movimentacoes_caixa m ORDER BY m.id DESC", conn)
+        conn.close()
+        
+        if not df_pdf_data.empty:
+            pdf_bytes = gerar_pdf_relatorio_caixa(df_pdf_data, "Extrato Geral Consolidado", total_geral, somas_dict)
+            st.download_button("📥 Descarregar Relatório PDF", data=pdf_bytes, file_name="relatorio_caixa_totalizado.pdf", mime="application/pdf", use_container_width=True)
 
     if perfil_atual == "Gerente / Admin":
         st.divider()
