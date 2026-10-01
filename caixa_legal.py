@@ -56,12 +56,6 @@ def init_db():
 init_db()
 
 def gerar_qrcode_pix(chave, valor):
-    # Payload simples contendo a chave pix e valor para visualização no QR Code
-    payload = f"00020126580014br.gov.bcb.pix0114{chave}5204000053039865802BR5925CAIXA LEGAL SISTEMA6009ITAMARACA62070503***6304"
-    if valor > 0:
-        # Se desejar incorporar o valor, pode ajustar a string ou usar a chave pura
-        pass
-    
     img = qrcode.make(f"PIXKEY:{chave} - Valor: R$ {valor:.2f}")
     buf = io.BytesIO()
     img.save(buf, format="PNG")
@@ -202,7 +196,7 @@ elif perfil_atual == "Gestor de Acompanhamento":
     ])
     aba_dash, aba_turnos, aba_mov, aba_rel = abas
 else:
-    abas = st.tabs(["🔓 Abertura de Caixa", "💸 Lançamentos (Vendas / Sangria / Reforço)", "🔒 Fecho de Caixa & Relatório"])
+    abas = st.tabs(["🔓 Abertura de Caixa", "💸 Lançamentos & Cancelamentos", "🔒 Fecho de Caixa & Relatório"])
     aba_abertura_op, aba_mov_op, aba_fecho_op = abas
 
 if perfil_atual in ["Gerente / Admin", "Gestor de Acompanhamento"]:
@@ -281,9 +275,9 @@ if perfil_atual in ["Gerente / Admin", "Gestor de Acompanhamento"]:
 
     with aba_mov:
         if perfil_atual == "Gerente / Admin":
-            st.subheader("💸 Registo de Movimentos Financeiros (Estilo PDV Saipos)")
+            st.subheader("💸 Registo e Gestão de Movimentos Financeiros")
             if turno_ativo is None:
-                st.warning("⚠️ Não tem nenhum turno aberto no momento. Abra um caixa para poder movimentar.")
+                st.warning("⚠️ Não tiene nenhum turno aberto no momento. Abra um caixa para poder movimentar.")
             else:
                 turno_id = turno_ativo[0]
                 st.info(f"Turno Ativo ID: {turno_id:03d} | Aberto em: {turno_ativo[2]} | Fundo Inicial: R$ {turno_ativo[1]:.2f}")
@@ -297,13 +291,11 @@ if perfil_atual in ["Gerente / Admin", "Gestor de Acompanhamento"]:
                     
                     valor = st.number_input("Valor da Venda / Operação (R$)", min_value=0.01, value=10.0, step=1.0)
                     
-                    # Exibir QR Code e Chave Pix se Pix for selecionado
                     if tipo_mov == "Venda" and forma_pag == "Pix":
                         st.info(f"📲 **Chave Pix:** `{CHAVE_PIX}`")
                         img_qr = gerar_qrcode_pix(CHAVE_PIX, valor)
                         st.image(img_qr, caption="QR Code Pix para Pagamento", width=220)
 
-                    # Tela auxiliar de calculo de troco caso seja dinheiro
                     dinheiro_recebido = 0.0
                     if tipo_mov == "Venda" and forma_pag == "Dinheiro":
                         st.markdown("---")
@@ -466,7 +458,7 @@ else:
             fundo_inicial = turno_ativo[1]
             
             conn = get_connection()
-            df_m_turno = pd.read_sql_query("SELECT tipo, forma_pagamento, valor, descricao, data_hora FROM movimentacoes_caixa WHERE turno_id = ?", conn, params=(turno_id,))
+            df_m_turno = pd.read_sql_query("SELECT id, tipo, forma_pagamento, valor, descricao, data_hora FROM movimentacoes_caixa WHERE turno_id = ?", conn, params=(turno_id,))
             conn.close()
 
             vendas_dinheiro = df_m_turno[(df_m_turno['tipo'] == 'Venda') & (df_m_turno['forma_pagamento'] == 'Dinheiro')]['valor'].sum() if not df_m_turno.empty else 0.0
@@ -486,13 +478,11 @@ else:
                 
                 valor = st.number_input("Valor da Venda / Operação (R$)", min_value=0.01, value=20.0, step=1.0)
                 
-                # Exibir QR Code e Chave Pix se Pix for selecionado
                 if tipo_mov == "Venda" and forma_pag == "Pix":
                     st.info(f"📲 **Chave Pix:** `{CHAVE_PIX}`")
                     img_qr = gerar_qrcode_pix(CHAVE_PIX, valor)
                     st.image(img_qr, caption="QR Code Pix para Pagamento", width=220)
 
-                # Calculadora de troco na visão do operador
                 dinheiro_recebido = 0.0
                 if tipo_mov == "Venda" and forma_pag == "Dinheiro":
                     st.markdown("---")
@@ -520,9 +510,40 @@ else:
                     st.rerun()
 
             st.divider()
-            st.subheader("📋 Extrato do Turno Atual")
+            st.subheader("📋 Extrato e Cancelamento com Autorização de Superior")
             if not df_m_turno.empty:
                 st.dataframe(df_m_turno, use_container_width=True)
+                
+                with st.form("form_cancelar_venda_sup"):
+                    id_para_cancelar = st.selectbox("Selecione o ID do Movimento para Cancelar", df_m_turno['id'].tolist())
+                    st.markdown("🔒 **Autorização de Superior Necessária**")
+                    user_superior = st.text_input("Utilizador Superior (Gerente / Gestor)").strip()
+                    senha_superior = st.text_input("Senha do Superior", type="password")
+                    
+                    if st.form_submit_button("❌ Autorizar e Cancelar Movimento", type="primary"):
+                        conn = get_connection()
+                        c = conn.cursor()
+                        c.execute("SELECT perfil, status, senha FROM usuarios WHERE username = ?", (user_superior,))
+                        res_sup = c.fetchone()
+                        
+                        if res_sup:
+                            perf_sup, status_sup, senha_bd_sup = res_sup
+                            if senha_bd_sup == hash_senha(senha_superior):
+                                if perf_sup in ["Gerente / Admin", "Gestor de Acompanhamento"] and status_sup == "Ativo":
+                                    c.execute("DELETE FROM movimentacoes_caixa WHERE id = ?", (id_para_cancelar,))
+                                    conn.commit()
+                                    conn.close()
+                                    st.success(f"✅ Movimento ID {id_para_cancelar} cancelado com autorização de {user_superior}!")
+                                    st.rerun()
+                                else:
+                                    conn.close()
+                                    st.error("⚠️ Este utilizador não tem permissão de superior para cancelar.")
+                            else:
+                                conn.close()
+                                st.error("⚠️ Senha do superior incorreta.")
+                        else:
+                            conn.close()
+                            st.error("⚠️ Utilizador superior não encontrado.")
             else:
                 st.info("Nenhum movimento registado neste turno ainda.")
 
