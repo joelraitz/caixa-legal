@@ -7,6 +7,7 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
+import qrcode
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
@@ -22,6 +23,7 @@ st.set_page_config(
 st.cache_data.clear()
 
 DB_CAIXA_FILE = "caixa_legal.db"
+CHAVE_PIX = "929813904244"
 
 def hash_senha(senha):
     return hashlib.sha256(str.encode(senha)).hexdigest()
@@ -52,6 +54,19 @@ def init_db():
     conn.close()
 
 init_db()
+
+def gerar_qrcode_pix(chave, valor):
+    # Payload simples contendo a chave pix e valor para visualização no QR Code
+    payload = f"00020126580014br.gov.bcb.pix0114{chave}5204000053039865802BR5925CAIXA LEGAL SISTEMA6009ITAMARACA62070503***6304"
+    if valor > 0:
+        # Se desejar incorporar o valor, pode ajustar a string ou usar a chave pura
+        pass
+    
+    img = qrcode.make(f"PIXKEY:{chave} - Valor: R$ {valor:.2f}")
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    buf.seek(0)
+    return buf
 
 def gerar_pdf_relatorio_caixa(df_dados, titulo_relatorio):
     buffer = io.BytesIO()
@@ -282,9 +297,11 @@ if perfil_atual in ["Gerente / Admin", "Gestor de Acompanhamento"]:
                     
                     valor = st.number_input("Valor da Venda / Operação (R$)", min_value=0.01, value=10.0, step=1.0)
                     
-                    # Informação da Chave Pix se Pix for selecionado
+                    # Exibir QR Code e Chave Pix se Pix for selecionado
                     if tipo_mov == "Venda" and forma_pag == "Pix":
-                        st.info("📲 **Chave Pix para Pagamento:** `929813904244`")
+                        st.info(f"📲 **Chave Pix:** `{CHAVE_PIX}`")
+                        img_qr = gerar_qrcode_pix(CHAVE_PIX, valor)
+                        st.image(img_qr, caption="QR Code Pix para Pagamento", width=220)
 
                     # Tela auxiliar de calculo de troco caso seja dinheiro
                     dinheiro_recebido = 0.0
@@ -469,9 +486,11 @@ else:
                 
                 valor = st.number_input("Valor da Venda / Operação (R$)", min_value=0.01, value=20.0, step=1.0)
                 
-                # Exibir chave Pix se selecionado
+                # Exibir QR Code e Chave Pix se Pix for selecionado
                 if tipo_mov == "Venda" and forma_pag == "Pix":
-                    st.info("📲 **Chave Pix para Pagamento:** `929813904244`")
+                    st.info(f"📲 **Chave Pix:** `{CHAVE_PIX}`")
+                    img_qr = gerar_qrcode_pix(CHAVE_PIX, valor)
+                    st.image(img_qr, caption="QR Code Pix para Pagamento", width=220)
 
                 # Calculadora de troco na visão do operador
                 dinheiro_recebido = 0.0
