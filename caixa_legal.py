@@ -149,7 +149,203 @@ if not st.session_state["logado"]:
     tela_login()
     st.stop()
 
-# Barra Superior Simples
+# Barra Superior Simples Corrigida
 col_top1, col_top2, col_top3 = st.columns([3, 1, 1])
 col_top1.title("💰 Caixa Legal — Ecrã de Operação")
-col_top2.write(f"👤 **{st.session_state['usuario']}**
+col_top2.markdown(f"👤 **{st.session_state['usuario']}**\n_{st.session_state['perfil']}_")
+if col_top3.button("🚪 Sair", use_container_width=True):
+    st.session_state["logado"] = False
+    st.session_state["usuario"] = None
+    st.session_state["perfil"] = None
+    st.rerun()
+
+st.divider()
+
+perfil_atual = st.session_state["perfil"]
+usuario_atual = st.session_state["usuario"]
+
+def get_turno_aberto(usuario):
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute("SELECT id, valor_inicial, data_abertura FROM turnos_caixa WHERE operador = ? AND status = 'Aberto'", (usuario,))
+    res = c.fetchone()
+    conn.close()
+    return res
+
+turno_ativo = get_turno_aberto(usuario_atual)
+
+# ==========================================
+# PAINEL DO ADMINISTRADOR / GESTOR
+# ==========================================
+if perfil_atual in ["Gerente / Admin", "Gestor de Acompanhamento"]:
+    st.subheader("📊 Painel de Controlo e Acompanhamento Geral")
+    
+    col_kpi1, col_kpi2, col_kpi3 = st.columns(3)
+    conn = get_connection()
+    df_mov = pd.read_sql_query("SELECT * FROM movimentacoes_caixa", conn)
+    conn.close()
+
+    faturamento_hoje = df_mov['valor'].sum() if not df_mov.empty else 0.0
+    col_kpi1.metric("Faturamento Registado", f"R$ {faturamento_hoje:.2f}")
+    col_kpi2.metric("Turnos Registados", len(pd.read_sql_query("SELECT * FROM turnos_caixa", get_connection())))
+    col_kpi3.metric("Utilizadores Ativos", len(pd.read_sql_query("SELECT * FROM usuarios", get_connection())))
+
+    st.markdown("### 📋 Informações Rápidas e Relatórios")
+    col_adm1, col_adm2 = st.columns(2)
+    
+    with col_adm1:
+        st.write("#### 📈 Extrato Geral")
+        conn = get_connection()
+        df_all = pd.read_sql_query("SELECT * FROM movimentacoes_caixa ORDER BY id DESC LIMIT 10", conn)
+        conn.close()
+        st.dataframe(df_all, use_container_width=True)
+
+    with col_adm2:
+        st.write("#### 📄 Descarregar Relatório PDF")
+        if not df_all.empty:
+            pdf_bytes = gerar_pdf_relatorio_caixa(df_all, "Extrato Geral")
+            st.download_button("📥 Descarregar PDF", data=pdf_bytes, file_name="relatorio_caixa.pdf", mime="application/pdf", use_container_width=True)
+
+    if perfil_atual == "Gerente / Admin":
+        st.divider()
+        st.markdown("### 👥 Gestão de Utilizadores (Bloquear / Criar)")
+        with st.form("form_adm_user"):
+            c_u1, c_u2, c_u3 = st.columns(3)
+            novo_u = c_u1.text_input("Novo Utilizador").strip()
+            nova_s = c_u2.text_input("Senha", type="password")
+            novo_p = c_u3.selectbox("Perfil", ["Operador de Caixa", "Gestor de Acompanhamento", "Gerente / Admin"])
+            if st.form_submit_button("Criar Utilizador", use_container_width=True):
+                if novo_u and nova_s:
+                    try:
+                        conn = get_connection()
+                        c = conn.cursor()
+                        c.execute("INSERT INTO usuarios VALUES (?, ?, ?, 'Ativo')", (novo_u, hash_senha(nova_s), novo_p))
+                        conn.commit()
+                        conn.close()
+                        st.success("Utilizador criado com sucesso!")
+                        st.rerun()
+                    except:
+                        st.error("Utilizador já existe.")
+
+# ==========================================
+# PAINEL DO OPERADOR DE CAIXA (Ecrã Único PDV)
+# ==========================================
+else:
+    if turno_ativo is None:
+        st.warning("⚠️ O seu caixa está **FECHADO**. Insira o fundo inicial de troco para abrir o caixa.")
+        with st.form("form_abrir_caixa_simples"):
+            fundo_inicial = st.number_input("Valor do Fundo de Troco Inicial (R$)", min_value=0.0, value=100.0, step=10.0)
+            if st.form_submit_button("🚀 Abrir Caixa Agora", type="primary", use_container_width=True):
+                conn = get_connection()
+                c = conn.cursor()
+                c.execute(
+                    "INSERT INTO turnos_caixa (operador, data_abertura, valor_inicial, status) VALUES (?, ?, ?, 'Aberto')",
+                    (usuario_atual, datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"), fundo_inicial)
+                )
+                conn.commit()
+                conn.close()
+                st.success("Caixa aberto com sucesso!")
+                st.rerun()
+    else:
+        turno_id = turno_ativo[0]
+        fundo_inicial = turno_ativo[1]
+        
+        conn = get_connection()
+        df_m_turno = pd.read_sql_query("SELECT id, tipo, forma_pagamento, valor, descricao, data_hora FROM movimentacoes_caixa WHERE turno_id = ?", conn, params=(turno_id,))
+        conn.close()
+
+        vendas_dinheiro = df_m_turno[(df_m_turno['tipo'] == 'Venda') & (df_m_turno['forma_pagamento'] == 'Dinheiro')]['valor'].sum() if not df_m_turno.empty else 0.0
+        total_sangria = df_m_turno[df_m_turno['tipo'] == 'Sangria']['valor'].sum() if not df_m_turno.empty else 0.0
+        total_reforco = df_m_turno[df_m_turno['tipo'] == 'Reforço']['valor'].sum() if not df_m_turno.empty else 0.0
+        caixa_gaveta = fundo_inicial + vendas_dinheiro + total_reforco - total_sangria
+
+        st.info(f"🟢 **CAIXA ABERTO** (Turno #{turno_id:03d}) | 💵 **Em Dinheiro na Gaveta:** R$ {caixa_gaveta:.2f}")
+
+        st.markdown("### 🛒 Registar Venda ou Operação Rápida")
+        with st.form("form_pdv_rapido", clear_on_submit=True):
+            col_f1, col_f2 = st.columns(2)
+            tipo_mov = col_f1.selectbox("Tipo de Operação", ["Venda", "Sangria (Retirada)", "Reforço (Entrada de Troco)"])
+            
+            forma_pag = "Dinheiro"
+            if tipo_mov == "Venda":
+                forma_pag = col_f2.selectbox("Forma de Pagamento", ["Dinheiro", "Pix", "Cartão de Crédito", "Cartão de Débito"])
+            
+            valor = st.number_input("Valor (R$)", min_value=0.01, value=10.0, step=1.0)
+            
+            if tipo_mov == "Venda" and forma_pag == "Pix":
+                st.info(f"📲 **Chave Pix para leitura:** `{CHAVE_PIX}`")
+                st.image(gerar_qrcode_pix(CHAVE_PIX, valor), width=180)
+
+            if tipo_mov == "Venda" and forma_pag == "Dinheiro":
+                recebido = st.number_input("Dinheiro entregue pelo cliente (R$)", min_value=0.0, value=float(valor), step=1.0)
+                troco = recebido - valor
+                if troco >= 0:
+                    st.success(f"🧮 **Troco a devolver: R$ {troco:.2f}**")
+                else:
+                    st.error("⚠️ O valor entregue é menor que a venda.")
+
+            descricao = st.text_input("Identificação / Descrição (Opcional)").strip()
+
+            if st.form_submit_button("✅ Confirmar Lançamento", type="primary", use_container_width=True):
+                conn = get_connection()
+                c = conn.cursor()
+                c.execute(
+                    "INSERT INTO movimentacoes_caixa (turno_id, tipo, forma_pagamento, valor, descricao, data_hora, operador) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (turno_id, tipo_mov, forma_pag, valor, descricao, datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"), usuario_atual)
+                )
+                conn.commit()
+                conn.close()
+                st.success("Registo efetuado com sucesso!")
+                st.rerun()
+
+        st.divider()
+        st.markdown("### 📋 Últimos Movimentos e Cancelamentos")
+        if not df_m_turno.empty:
+            st.dataframe(df_m_turno, use_container_width=True)
+            
+            with st.form("form_cancela_simples"):
+                id_cancela = st.selectbox("Selecione o ID para Cancelar", df_m_turno['id'].tolist())
+                st.write("🔒 **Autorização de Superior para Cancelamento**")
+                
+                conn = get_connection()
+                sup_list = pd.read_sql_query("SELECT username FROM usuarios WHERE perfil IN ('Gerente / Admin', 'Gestor de Acompanhamento') AND status = 'Ativo'", conn)['username'].tolist()
+                conn.close()
+
+                sup_escolhido = st.selectbox("Selecionar Superior", sup_list)
+                senha_sup = st.text_input("Senha do Superior", type="password")
+
+                if st.form_submit_button("❌ Cancelar Movimento", use_container_width=True):
+                    conn = get_connection()
+                    c = conn.cursor()
+                    c.execute("SELECT senha FROM usuarios WHERE username = ?", (sup_escolhido,))
+                    res_s = c.fetchone()
+                    if res_s and res_s[0] == hash_senha(senha_sup):
+                        c.execute("DELETE FROM movimentacoes_caixa WHERE id = ?", (id_cancela,))
+                        conn.commit()
+                        conn.close()
+                        st.success("Movimento cancelado com sucesso!")
+                        st.rerun()
+                    else:
+                        conn.close()
+                        st.error("Senha do superior incorreta.")
+        else:
+            st.info("Nenhum movimento neste turno.")
+
+        st.divider()
+        st.markdown("### 🔒 Fechamento de Caixa")
+        with st.form("form_fechar_caixa_simples"):
+            contagem_fisica = st.number_input("Dinheiro contado fisicamente na gaveta (R$)", min_value=0.0, value=float(caixa_gaveta), step=1.0)
+            obs_f = st.text_input("Observação do Fechamento").strip()
+            
+            if st.form_submit_button("🔒 Fechar Caixa Definitivamente", use_container_width=True):
+                dif = contagem_fisica - caixa_gaveta
+                conn = get_connection()
+                c = conn.cursor()
+                c.execute(
+                    "UPDATE turnos_caixa SET valor_fechamento = ?, diferenca = ?, status = 'Fechado', observacao = ? WHERE id = ?",
+                    (contagem_fisica, dif, f"Fechado. Dif: R$ {dif:.2f}. {obs_f}", turno_id)
+                )
+                conn.commit()
+                conn.close()
+                st.success(f"Caixa fechado! Diferença: R$ {dif:.2f}")
+                st.rerun()
